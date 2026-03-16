@@ -1,0 +1,75 @@
+name: Daily News Scrape
+
+on:
+  schedule:
+    - cron: "0 18 * * *"  # 03:00 KST daily
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Target date (YYYYMMDD), defaults to today KST"
+        required: false
+      workers:
+        description: "Number of parallel workers (default: 5)"
+        required: false
+        default: "5"
+      skip_clustering:
+        description: "Skip issue clustering step"
+        required: false
+        default: "false"
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run scraper
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          ARGS="--workers ${{ github.event.inputs.workers || '5' }}"
+          if [ -n "${{ github.event.inputs.date }}" ]; then
+            ARGS="$ARGS --date ${{ github.event.inputs.date }}"
+          fi
+          python -m main $ARGS
+
+  cluster:
+    needs: scrape
+    if: ${{ github.event.inputs.skip_clustering != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ML dependencies
+        run: pip install -r requirements-ml.txt
+
+      - name: Generate daily issues
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          ARGS=""
+          if [ -n "${{ github.event.inputs.date }}" ]; then
+            ARGS="--date ${{ github.event.inputs.date }}"
+          fi
+          python -m generate_issues $ARGS
