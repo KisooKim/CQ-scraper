@@ -27,6 +27,8 @@ from db import (
     save_article,
     create_scrape_run,
     complete_scrape_run,
+    get_articles_for_engagement_update,
+    update_article_engagement,
 )
 from storage import make_r2_key, upload_article_text
 
@@ -155,19 +157,50 @@ def run(target_date: str, workers: int = 5, press_type: str | None = None):
             total_errors += result["errors"]
             all_error_messages.extend(result.get("error_messages", []))
 
-    duration = time.time() - start
+    scrape_duration = time.time() - start
+
+    # --- Engagement update phase ---
+    eng_start = time.time()
+    eng_articles = get_articles_for_engagement_update(publish_date)
+    eng_updated = 0
+    eng_errors = 0
+
+    if eng_articles:
+        log.info("Engagement update: %d articles to check", len(eng_articles))
+
+        def _update_one(art: dict) -> bool:
+            try:
+                client = _get_client()
+                resp_count, comm_count = fetch_engagement(client, art["url"])
+                update_article_engagement(art["id"], resp_count, comm_count)
+                return True
+            except Exception:
+                return False
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(_update_one, art): art for art in eng_articles}
+            for future in as_completed(futures):
+                if future.result():
+                    eng_updated += 1
+                else:
+                    eng_errors += 1
+
+    eng_duration = time.time() - eng_start
+    total_duration = time.time() - start
+
     complete_scrape_run(
         run_id,
         press_count=len(press_list),
         article_count=total_articles,
         error_count=total_errors,
-        duration_sec=duration,
+        duration_sec=total_duration,
         error_log="\n".join(all_error_messages) if all_error_messages else "",
     )
 
     log.info(
-        "Done. date=%s | articles=%d | errors=%d | duration=%.1fs",
-        target_date, total_articles, total_errors, duration,
+        "Done. date=%s | new=%d | errors=%d | scrape=%.0fs | engagement=%d updated (%.0fs) | total=%.0fs",
+        target_date, total_articles, total_errors, scrape_duration,
+        eng_updated, eng_duration, total_duration,
     )
 
 

@@ -124,6 +124,86 @@ def save_article(*, press_id: int, title: str, url: str, r2_key: str | None,
     return article_id
 
 
+def get_articles_for_engagement_update(publish_date: str, recent_hours: float = 2.0) -> list[dict]:
+    """Get articles that need engagement updates.
+
+    Strategy:
+      - Articles scraped within recent_hours: ALL (engagement not settled yet)
+      - Older articles: only those with response_count + comment_count > 0
+
+    Returns list of dicts with id, url.
+    """
+    from datetime import datetime, timezone, timedelta
+
+    client = get_client()
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=recent_hours)).isoformat()
+    articles = []
+    page_size = 1000
+
+    # 1. Recent articles (all)
+    offset = 0
+    while True:
+        resp = (client.table("articles")
+                .select("id, url")
+                .eq("publish_date", publish_date)
+                .gte("scraped_at", cutoff)
+                .range(offset, offset + page_size - 1)
+                .execute())
+        articles.extend(resp.data)
+        if len(resp.data) < page_size:
+            break
+        offset += page_size
+
+    recent_ids = {a["id"] for a in articles}
+
+    # 2. Older articles with engagement > 0
+    offset = 0
+    while True:
+        resp = (client.table("articles")
+                .select("id, url")
+                .eq("publish_date", publish_date)
+                .lt("scraped_at", cutoff)
+                .gt("response_count", 0)
+                .range(offset, offset + page_size - 1)
+                .execute())
+        for row in resp.data:
+            if row["id"] not in recent_ids:
+                articles.append(row)
+        if len(resp.data) < page_size:
+            break
+        offset += page_size
+
+    # Also get older articles with comments > 0
+    offset = 0
+    existing_ids = {a["id"] for a in articles}
+    while True:
+        resp = (client.table("articles")
+                .select("id, url")
+                .eq("publish_date", publish_date)
+                .lt("scraped_at", cutoff)
+                .gt("comment_count", 0)
+                .range(offset, offset + page_size - 1)
+                .execute())
+        for row in resp.data:
+            if row["id"] not in existing_ids:
+                articles.append(row)
+                existing_ids.add(row["id"])
+        if len(resp.data) < page_size:
+            break
+        offset += page_size
+
+    return articles
+
+
+def update_article_engagement(article_id: int, response_count: int, comment_count: int):
+    """Update engagement counts for an article."""
+    client = get_client()
+    (client.table("articles")
+     .update({"response_count": response_count, "comment_count": comment_count})
+     .eq("id", article_id)
+     .execute())
+
+
 def create_scrape_run(target_date: str) -> int:
     client = get_client()
     resp = (client.table("scrape_runs")
