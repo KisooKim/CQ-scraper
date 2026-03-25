@@ -2,7 +2,17 @@ name: Daily News Scrape
 
 on:
   schedule:
-    - cron: "0 18 * * *"  # 03:00 KST daily
+    # Newspaper (지면 30개) — 3x/day, every 8 hours
+    - cron: "0 14 * * *"   # 23:00 KST
+    - cron: "0 22 * * *"   # 07:00 KST  ← clustering trigger
+    - cron: "0 6 * * *"    # 15:00 KST
+
+    # Other (통신/방송/온라인 53개) — 4x/day, every 6 hours
+    - cron: "0 17 * * *"   # 02:00 KST
+    - cron: "0 23 * * *"   # 08:00 KST
+    - cron: "0 5 * * *"    # 14:00 KST
+    - cron: "0 11 * * *"   # 20:00 KST
+
   workflow_dispatch:
     inputs:
       date:
@@ -12,6 +22,10 @@ on:
         description: "Number of parallel workers (default: 5)"
         required: false
         default: "5"
+      type:
+        description: "Press type: newspaper, other, or all (default)"
+        required: false
+        default: ""
       skip_clustering:
         description: "Skip issue clustering step"
         required: false
@@ -28,9 +42,26 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: "pip"
 
       - name: Install dependencies
         run: pip install -r requirements.txt
+
+      - name: Determine press type from schedule
+        id: press-type
+        run: |
+          MANUAL_TYPE="${{ github.event.inputs.type }}"
+          if [ -n "$MANUAL_TYPE" ]; then
+            echo "type=$MANUAL_TYPE" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event.schedule }}" = "0 14 * * *" ] || \
+               [ "${{ github.event.schedule }}" = "0 22 * * *" ] || \
+               [ "${{ github.event.schedule }}" = "0 6 * * *" ]; then
+            echo "type=newspaper" >> $GITHUB_OUTPUT
+          elif [ -n "${{ github.event.schedule }}" ]; then
+            echo "type=other" >> $GITHUB_OUTPUT
+          else
+            echo "type=" >> $GITHUB_OUTPUT
+          fi
 
       - name: Run scraper
         env:
@@ -45,13 +76,21 @@ jobs:
           if [ -n "${{ github.event.inputs.date }}" ]; then
             ARGS="$ARGS --date ${{ github.event.inputs.date }}"
           fi
+          TYPE="${{ steps.press-type.outputs.type }}"
+          if [ -n "$TYPE" ]; then
+            ARGS="$ARGS --type $TYPE"
+          fi
+          echo "Running: python -m main $ARGS"
           python -m main $ARGS
 
   cluster:
     needs: scrape
-    if: ${{ github.event.inputs.skip_clustering != 'true' }}
+    # Run clustering after 07:00 KST newspaper scrape, or on manual trigger
+    if: >-
+      github.event_name == 'workflow_dispatch' && github.event.inputs.skip_clustering != 'true'
+      || github.event.schedule == '0 22 * * *'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
@@ -59,6 +98,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: "pip"
 
       - name: Install ML dependencies
         run: pip install -r requirements-ml.txt
@@ -67,9 +107,43 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: |
           ARGS=""
           if [ -n "${{ github.event.inputs.date }}" ]; then
             ARGS="--date ${{ github.event.inputs.date }}"
           fi
           python -m generate_issues $ARGS
+
+  publish:
+    needs: [scrape, cluster]
+    if: ${{ always() && needs.cluster.result == 'success' }}
+    runs-on: self-hosted
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Name issues and generate briefings
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          CLAUDE_CMD: C:\Users\kisoo\AppData\Roaming\npm\claude.cmd
+        shell: powershell
+        run: |
+          $date = "${{ github.event.inputs.date }}"
+          if ($date) {
+            python -m name_issues --date $date
+          } else {
+            python -m name_issues
+          }

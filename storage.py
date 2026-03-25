@@ -52,3 +52,36 @@ def download_article_text(r2_key: str) -> dict | None:
         return json.loads(resp["Body"].read().decode("utf-8"))
     except s3.exceptions.NoSuchKey:
         return None
+
+
+def upload_thumbnail(article_id: int, image_bytes: bytes,
+                     content_type: str = "image/jpeg") -> str:
+    """Upload thumbnail image to R2. Returns R2 key."""
+    s3 = get_s3_client()
+    r2_key = f"thumbs/{article_id}.jpg"
+    s3.put_object(
+        Bucket=settings.r2_bucket,
+        Key=r2_key,
+        Body=image_bytes,
+        ContentType=content_type,
+    )
+    return r2_key
+
+
+def delete_thumbnail(article_id: int) -> None:
+    """Delete thumbnail from R2."""
+    s3 = get_s3_client()
+    s3.delete_object(Bucket=settings.r2_bucket, Key=f"thumbs/{article_id}.jpg")
+
+
+def get_r2_public_url(r2_key: str) -> str:
+    """Get public URL for an R2 object.
+
+    Requires R2 public access (r2.dev or custom domain) to be enabled.
+    Configure R2_PUBLIC_URL in .env (e.g., https://pub-xxx.r2.dev).
+    """
+    base = settings.r2_public_url.rstrip("/") if hasattr(settings, "r2_public_url") and settings.r2_public_url else ""
+    if not base:
+        # Fallback: construct from account ID (won't work without public access)
+        base = f"https://{settings.r2_account_id}.r2.dev"
+    return f"{base}/{r2_key}"

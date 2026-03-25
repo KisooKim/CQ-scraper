@@ -13,21 +13,48 @@ def get_client() -> Client:
 
 
 def get_existing_urls(publish_date: str) -> set[str]:
-    """Return set of article URLs already in DB for a given date."""
+    """Return set of article URLs already in DB for a given date.
+
+    Paginates to handle >1000 articles (Supabase default limit).
+    """
     client = get_client()
-    resp = client.table("articles").select("url").eq("publish_date", publish_date).execute()
-    return {row["url"] for row in resp.data}
+    urls: set[str] = set()
+    offset = 0
+    page_size = 1000
+    while True:
+        resp = (client.table("articles")
+                .select("url")
+                .eq("publish_date", publish_date)
+                .range(offset, offset + page_size - 1)
+                .execute())
+        for row in resp.data:
+            urls.add(row["url"])
+        if len(resp.data) < page_size:
+            break
+        offset += page_size
+    return urls
 
 
-def get_press_list() -> list[dict]:
-    """Return all active press entries."""
+def get_press_list(press_type: str | None = None) -> list[dict]:
+    """Return active press entries, optionally filtered by type.
+
+    Args:
+        press_type: 'newspaper' for newspaper outlets only,
+                    'other' for non-newspaper (wire/broadcast/online/etc.),
+                    None for all active press.
+    """
     client = get_client()
-    resp = (client.table("press")
-            .select("id, code, name")
-            .eq("is_active", True)
-            .order("id")
-            .execute())
-    return resp.data
+    query = (client.table("press")
+             .select("id, code, name, press_type")
+             .eq("is_active", True)
+             .order("id"))
+
+    if press_type == "newspaper":
+        query = query.eq("press_type", "newspaper")
+    elif press_type == "other":
+        query = query.neq("press_type", "newspaper")
+
+    return query.execute().data
 
 
 def find_or_create_journalist(name: str, press_id: int) -> int:
@@ -51,6 +78,7 @@ def find_or_create_journalist(name: str, press_id: int) -> int:
 def save_article(*, press_id: int, title: str, url: str, r2_key: str | None,
                  original_url: str | None = None,
                  thumbnail_url: str | None = None,
+                 is_portrait_thumb: bool = False,
                  publish_date: str, layout_section: str | None, layout_position: int,
                  response_count: int, comment_count: int,
                  journalist_names: list[str], image_urls: list[str]) -> int | None:
@@ -66,6 +94,7 @@ def save_article(*, press_id: int, title: str, url: str, r2_key: str | None,
                 "r2_key": r2_key,
                 "original_url": original_url,
                 "thumbnail_url": thumbnail_url,
+                "is_portrait_thumb": is_portrait_thumb,
                 "publish_date": publish_date,
                 "layout_section": layout_section,
                 "layout_position": layout_position,

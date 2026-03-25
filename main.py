@@ -17,7 +17,7 @@ from crawlers.naver import (
     _get_client,
     _delay,
     _extract_ids_from_url,
-    scrape_newspaper_page,
+    scrape_press_page,
     scrape_article_detail,
     fetch_engagement,
 )
@@ -59,7 +59,8 @@ def _scrape_one_press(press: dict, target_date: str, publish_date: str,
     client = _get_client()
 
     try:
-        articles = scrape_newspaper_page(client, press_code, target_date)
+        _delay()  # delay before newspaper page fetch too
+        articles = scrape_press_page(client, press_code, target_date)
         log.info("  [%s] Found %d articles", press_name, len(articles))
     except Exception as e:
         log.error("  [%s] Failed newspaper page: %s", press_name, e)
@@ -96,6 +97,7 @@ def _scrape_one_press(press: dict, target_date: str, publish_date: str,
                 r2_key=r2_key,
                 original_url=detail.get("original_url"),
                 thumbnail_url=art.get("thumbnail_url"),
+                is_portrait_thumb=False,
                 publish_date=publish_date,
                 layout_section=art["section"],
                 layout_position=art["position"],
@@ -118,9 +120,16 @@ def _scrape_one_press(press: dict, target_date: str, publish_date: str,
     return {"saved": articles_saved, "errors": errors, "error_messages": error_messages}
 
 
-def run(target_date: str, workers: int = 5):
-    """Scrape all newspapers for a given date (YYYYMMDD)."""
-    log.info("Starting scrape for date=%s with %d workers", target_date, workers)
+def run(target_date: str, workers: int = 5, press_type: str | None = None):
+    """Scrape newspapers for a given date (YYYYMMDD).
+
+    Args:
+        press_type: 'newspaper' for newspaper outlets only,
+                    'other' for non-newspaper (wire/broadcast/online/etc.),
+                    None for all.
+    """
+    label = press_type or "all"
+    log.info("Starting scrape for date=%s type=%s with %d workers", target_date, label, workers)
     start = time.time()
 
     # Convert YYYYMMDD to YYYY-MM-DD for DB
@@ -128,7 +137,7 @@ def run(target_date: str, workers: int = 5):
 
     run_id = create_scrape_run(publish_date)
     existing_urls = get_existing_urls(publish_date)
-    press_list = get_press_list()
+    press_list = get_press_list(press_type=press_type)
 
     total_articles = 0
     total_errors = 0
@@ -175,6 +184,12 @@ def main():
         default=5,
         help="Number of parallel workers (default: 5)",
     )
+    parser.add_argument(
+        "--type",
+        choices=["newspaper", "other"],
+        default=None,
+        help="Press type filter: 'newspaper' (지면), 'other' (통신/방송/온라인), or all if omitted",
+    )
     args = parser.parse_args()
 
     if args.date:
@@ -182,7 +197,7 @@ def main():
     else:
         target_date = datetime.now(KST).strftime("%Y%m%d")
 
-    run(target_date, workers=args.workers)
+    run(target_date, workers=args.workers, press_type=args.type)
 
 
 if __name__ == "__main__":
