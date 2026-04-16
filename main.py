@@ -77,6 +77,20 @@ def _scrape_one_press(press: dict, target_date: str, publish_date: str,
         try:
             _delay()
             detail = scrape_article_detail(client, art["url"])
+
+            # Use the article's actual publish date (from data-date-time attr).
+            # If parsing fails, skip — do NOT fall back to run date, which
+            # historically polluted publish_date on re-scraped old articles.
+            parsed_dt = detail.get("publish_datetime")
+            if not parsed_dt or len(parsed_dt) < 10:
+                log.warning("  [%s] Missing publish_datetime, skipping: %s",
+                            press_name, art["url"])
+                errors += 1
+                error_messages.append(
+                    f"{press_name}: {art['title'][:30]}: no publish_datetime")
+                continue
+            article_publish_date = parsed_dt[:10]  # YYYY-MM-DD
+
             response_count, comment_count = fetch_engagement(client, art["url"])
 
             # Upload body text to R2
@@ -100,7 +114,7 @@ def _scrape_one_press(press: dict, target_date: str, publish_date: str,
                 original_url=detail.get("original_url"),
                 thumbnail_url=art.get("thumbnail_url"),
                 is_portrait_thumb=False,
-                publish_date=publish_date,
+                publish_date=article_publish_date,
                 layout_section=art["section"],
                 layout_position=art["position"],
                 response_count=response_count,

@@ -48,6 +48,7 @@ def _get_client() -> httpx.Client:
         headers=headers,
         timeout=settings.request_timeout,
         follow_redirects=True,
+        transport=httpx.HTTPTransport(retries=3),
     )
 
 
@@ -337,12 +338,24 @@ def scrape_article_detail(client: httpx.Client, article_url: str) -> dict:
     origin_link = soup.select_one("a.media_end_head_origin_link")
     original_url = origin_link.get("href") if origin_link else None
 
+    # Publish datetime (KST) — parse from data-date-time attr
+    # Format: "YYYY-MM-DD HH:MM:SS". Fall back to modify time if missing.
+    publish_datetime = None
+    ts_el = soup.select_one(".media_end_head_info_datestamp_time._ARTICLE_DATE_TIME")
+    if ts_el and ts_el.get("data-date-time"):
+        publish_datetime = ts_el["data-date-time"].strip()
+    else:
+        mod_el = soup.select_one(".media_end_head_info_datestamp_time._ARTICLE_MODIFY_DATE_TIME")
+        if mod_el and mod_el.get("data-modify-date-time"):
+            publish_datetime = mod_el["data-modify-date-time"].strip()
+
     return {
         "title": title,
         "body_text": body_text,
         "journalist_names": journalist_names,
         "image_urls": image_urls,
         "original_url": original_url,
+        "publish_datetime": publish_datetime,
     }
 
 
